@@ -1,4 +1,3 @@
-// Step-2 enhanced: add "Kirim Bukti" -> bot DM user -> forward attachments to moderator
 const { Client, GatewayIntentBits, REST, Routes, ActionRowBuilder, ButtonBuilder, ButtonStyle, EmbedBuilder, Partials } = require('discord.js');
 const fs = require('fs');
 const path = require('path');
@@ -13,7 +12,6 @@ if (!CLIENT_ID || !GUILD_ID || !TOKEN) {
   process.exit(1);
 }
 
-// history file (optional)
 const HISTORY_FILE = path.join(__dirname, 'history.json');
 function loadHistory() {
   try { if (!fs.existsSync(HISTORY_FILE)) return []; return JSON.parse(fs.readFileSync(HISTORY_FILE, 'utf8')||'[]'); }
@@ -23,13 +21,11 @@ function saveHistory(h) {
   try { fs.writeFileSync(HISTORY_FILE, JSON.stringify(h, null, 2)); } catch (e) { console.error('history save err', e); }
 }
 
-// moderator info (display only)
 const MODS = {
   '08170512639': { tag: '@jojo168', account: '08170512639', id: process.env.MOD1_ID || '971823685595967610' },
   '085219498004': { tag: '@whoisnda_', account: '085219498004', id: process.env.MOD2_ID || '332128597911273473' }
 };
 
-// map to track proof-target when bot DM user: userId -> account
 const PROOF_TARGET = new Map();
 
 const client = new Client({
@@ -37,7 +33,6 @@ const client = new Client({
   partials: [Partials.Channel]
 });
 
-// deploy command (guild-only)
 async function deployCommands() {
   const rest = new REST({ version: '10' }).setToken(TOKEN);
   const commands = [{ name: 'bypass', description: 'Tampilkan panel bypass (volcano)' }];
@@ -54,7 +49,6 @@ client.once('ready', async () => {
   await deployCommands();
 });
 
-// helper to send DM with instructions and set PROOF_TARGET
 async function initiateProofDM(user, modAccount) {
   try {
     const mod = MODS[modAccount];
@@ -70,7 +64,7 @@ async function initiateProofDM(user, modAccount) {
       .setTimestamp();
 
     const sent = await user.send({ embeds: [dmEmbed] });
-    // store mapping: user.id -> modAccount
+    
     PROOF_TARGET.set(user.id, modAccount);
     return true;
   } catch (e) {
@@ -81,7 +75,7 @@ async function initiateProofDM(user, modAccount) {
 
 client.on('interactionCreate', async (interaction) => {
   try {
-    // slash command
+    
     if (interaction.isCommand() && interaction.commandName === 'bypass') {
       const embed = new EmbedBuilder()
         .setTitle('🔥 VOLCANO BYPASS')
@@ -98,7 +92,7 @@ client.on('interactionCreate', async (interaction) => {
       return interaction.reply({ embeds: [embed], components: [row] });
     }
 
-    // button interactions -> ephemeral info + "Kirim Bukti" button
+    
     if (interaction.isButton()) {
       if (interaction.customId === 'btn_jojo' || interaction.customId === 'btn_whoisnda') {
         const isJojo = interaction.customId === 'btn_jojo';
@@ -120,7 +114,7 @@ client.on('interactionCreate', async (interaction) => {
         return interaction.reply({ embeds: [embed], components: [row], ephemeral: true });
       }
 
-      // user pressed "Kirim Bukti" -> bot sends DM (and stores PROOF_TARGET)
+      
       if (interaction.customId.startsWith('proof_')) {
         const account = interaction.customId.split('_')[1];
         const user = interaction.user;
@@ -142,17 +136,16 @@ client.on('interactionCreate', async (interaction) => {
   }
 });
 
-// listen to DM messages
 client.on('messageCreate', async (message) => {
   try {
-    // ignore bot messages and ignore non-DM channels
+    
     if (message.author.bot) return;
-    if (!message.channel || message.channel.type !== 1) return; // 1 = DM in discord.js v14 (ChannelType.DM)
+    if (!message.channel || message.channel.type !== 1) return; 
     const userId = message.author.id;
 
-    // check if we expected proof from this user
+    
     if (!PROOF_TARGET.has(userId)) {
-      // Optionally: guide user to press "Kirim Bukti" in server first
+      
       await message.reply('Halo — jika Anda ingin mengirim bukti transfer, silakan tekan tombol "Kirim Bukti" pada message `/bypass` di server dulu.');
       return;
     }
@@ -165,40 +158,40 @@ client.on('messageCreate', async (message) => {
       return;
     }
 
-    // ensure there is at least one attachment
+    
     if (!message.attachments || message.attachments.size === 0) {
       await message.reply('Tidak menemukan attachment. Silakan kirim file (screenshot/foto) sebagai attachment.');
       return;
     }
 
-    // forward attachments + optional content to moderator via DM
+    
     try {
       const modUser = await client.users.fetch(mod.id);
-      // Build a message for moderator
+      
       const forwardEmbed = new EmbedBuilder()
         .setTitle('📎 Bukti Transfer Diterima')
         .setDescription(`User <@${userId}> mengirim bukti untuk rekening **${mod.account}**`)
         .addFields({ name: 'Catatan pengguna', value: message.content ? (message.content.slice(0, 1024) || '-') : '-' })
         .setTimestamp();
 
-      // send embed first, then files
+      
       await modUser.send({ embeds: [forwardEmbed] });
 
-      // forward every attachment (discord.js Attachment objects)
+      
       for (const [, att] of message.attachments) {
-        // att.url is a public url, send it as file via URL
+        
         await modUser.send({ content: `File dari <@${userId}>:`, files: [att.url] }).catch(e => console.error('forward att error', e));
       }
 
-      // confirm to user
+      
       await message.reply('Bukti berhasil dikirim ke moderator. Terima kasih.');
 
-      // save to history
+      
       const hist = loadHistory();
       hist.push({ userId, modAccount, attachments: message.attachments.map(a => ({ url: a.url, name: a.name })), content: message.content || '', at: new Date().toISOString() });
       saveHistory(hist);
 
-      // clear expected target so next DM requires pressing "Kirim Bukti" again
+      
       PROOF_TARGET.delete(userId);
 
     } catch (e) {
