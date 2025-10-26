@@ -1,12 +1,10 @@
 {
-  "name": "discord-bypass-bot",
+  "name": "discord-bypass-bot-step2",
   "version": "1.0.0",
-  "description": "Discord bypass volcano — Guild-only version",
   "main": "index.js",
   "scripts": {
     "start": "node index.js"
   },
-  "author": "@unstoppable_neid",
   "dependencies": {
     "discord.js": "^14.14.0",
     "dotenv": "^16.3.1"
