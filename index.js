@@ -1,5 +1,5 @@
 // ===========================================
-// Bypass Bot — Full + Queue Realtime + Auto-refresh + DM Buttons Hide
+// Bypass Bot — Full + Queue Realtime + Auto-refresh + DM Buttons Fix
 // ===========================================
 const fs = require('fs');
 const path = require('path');
@@ -10,7 +10,7 @@ const {
 } = require('discord.js');
 require('dotenv').config();
 
-// ====== Replit Secrets (WAJIB) ======
+// ====== Replit Secrets ======
 const TOKEN = process.env.TOKEN;
 const CLIENT_ID = process.env.CLIENT_ID;
 const GUILD_ID = process.env.GUILD_ID;
@@ -23,7 +23,7 @@ if (!TOKEN || !CLIENT_ID || !GUILD_ID || !CHANNEL_LOG_ID || !MOD1_ID || !MOD2_ID
   process.exit(1);
 }
 
-// ====== files ======
+// ====== Files ======
 const HISTORY_FILE = path.join(__dirname, 'history.json');
 const QUEUE_FILE = path.join(__dirname, 'queue.json');
 
@@ -46,7 +46,7 @@ function loadQueue(){
 }
 function saveQueue(q){ try{ fs.writeFileSync(QUEUE_FILE, JSON.stringify(q, null, 2)) } catch(e){ console.error(e); } }
 
-// ====== Moderators mapping ======
+// ====== Moderator mapping ======
 const MODS = {
   '08170512639': { id: MOD1_ID, tag: '@jojo168', account: '08170512639' },
   '085219498004': { id: MOD2_ID, tag: '@whoisnda_', account: '085219498004' }
@@ -63,7 +63,7 @@ const client = new Client({
   partials: [Partials.Channel]
 });
 
-// ====== queue helpers ======
+// ====== Queue helpers ======
 let QUEUE = loadQueue();
 if (!QUEUE) QUEUE = { accounts: ['08170512639','085219498004'], nextIndex: 0, counts: { '08170512639': 0, '085219498004': 0 } };
 
@@ -106,7 +106,7 @@ client.once('ready', async () => {
   await deployCommands();
 });
 
-// ====== forward proof to mod (DM) ======
+// ====== Forward proof to mod (DM) ======
 async function forwardProofToMod(message, mod) {
   const userId = message.author.id;
   const forwardEmbed = new EmbedBuilder()
@@ -150,12 +150,12 @@ async function initiateProofDMAssign(user) {
   } catch(e) { console.error(e); return { ok: false }; }
 }
 
-// ====== interaction handler ======
+// ====== Interaction handler ======
 client.on('interactionCreate', async (interaction) => {
   try {
     if (interaction.isCommand() && interaction.commandName === 'bypass') {
       const embed = new EmbedBuilder()
-        .setTitle('🔥 VOLCANO BYPASS')
+        .setTitle('🔥 VOLCANO BYPASS') // hapus kata “Update”
         .setDescription('Tombol biru untuk fairness, assignment auto round-robin.')
         .setColor(0x2B6CB0)
         .addFields(...queueStatusFields())
@@ -170,14 +170,14 @@ client.on('interactionCreate', async (interaction) => {
       const reply = await interaction.reply({ embeds: [embed], components: [row], fetchReply: true });
       BYPASS_EMBEDS.set(reply.id, reply);
 
-      // auto-refresh embed tiap 10 detik
+      // auto-refresh embed tiap 10 detik, judul tetap bersih
       const interval = setInterval(async () => {
         if (!BYPASS_EMBEDS.has(reply.id)) return clearInterval(interval);
         try {
           const msg = BYPASS_EMBEDS.get(reply.id);
           if (!msg.editable) return clearInterval(interval);
           const newEmbed = new EmbedBuilder()
-            .setTitle('🔥 VOLCANO BYPASS (Update)')
+            .setTitle('🔥 VOLCANO BYPASS') // tetap tanpa Update
             .setDescription('Tombol biru untuk fairness, assignment auto round-robin.')
             .setColor(0x2B6CB0)
             .addFields(...queueStatusFields())
@@ -190,80 +190,5 @@ client.on('interactionCreate', async (interaction) => {
 
     if (interaction.isButton()) {
       const cid = interaction.customId;
-      // tombol assign
-      if (cid === 'assign_btn_jojo' || cid === 'assign_btn_whoisnda') {
-        const res = await initiateProofDMAssign(interaction.user);
-        if (!res.ok) return interaction.reply({ content: 'Gagal DM, buka DM anda.', ephemeral: true });
-        const assigned = res.assignedAccount;
-        const mod = MODS[assigned];
 
-        const emb = new EmbedBuilder()
-          .setTitle('Moderator Ditugaskan')
-          .setDescription(`Kamu dialokasikan ke moderator ${mod.tag}. Silakan cek DM.`)
-          .addFields({ name: 'Moderator', value: mod.tag, inline: true }, { name: 'Nomor Rekening', value: mod.account, inline: true }, ...queueStatusFields())
-          .setFooter({ text: 'Jika DM tidak datang, cek privacy.' }).setTimestamp();
-
-        const row = new ActionRowBuilder().addComponents(
-          new ButtonBuilder().setCustomId('resend_dm').setLabel('Kirim Ulang DM').setStyle(ButtonStyle.Primary),
-          new ButtonBuilder().setCustomId('cancel_assign').setLabel('Cancel').setStyle(ButtonStyle.Secondary)
-        );
-
-        const hist = loadHistory();
-        hist.push({ type: 'assigned', userId: interaction.user.id, toAccount: assigned, at: new Date().toISOString() });
-        saveHistory(hist);
-        return interaction.reply({ embeds: [emb], components: [row], ephemeral: true });
-      }
-
-      // tombol mod DM (Send Bypass / Done / Cancel / Error)
-      if (/^(sendbypass|done|cancel|error)_\d+$/.test(cid)) {
-        const [action, userId] = cid.split('_');
-        const pending = PENDING.get(userId) || null;
-        if (pending && pending.modAccount) decrementModCount(pending.modAccount);
-        if (PENDING.has(userId)) PENDING.delete(userId);
-
-        // hapus tombol agar mod tau sudah dikerjakan
-        await interaction.update({
-          content: `Tombol ${action.toUpperCase()} ditekan oleh <@${interaction.user.id}>`,
-          components: [],
-          embeds: interaction.message.embeds
-        });
-
-        // DM user jika bukan Send Bypass
-        if (action !== 'sendbypass') {
-          try{
-            const user = await client.users.fetch(userId);
-            const emoji = action==='done'?'✅':(action==='cancel'?'❌':'⚠️');
-            await user.send({
-              embeds: [
-                new EmbedBuilder()
-                  .setTitle(`Status Transfer: ${action.toUpperCase()} ${emoji}`)
-                  .setDescription(`Moderator <@${interaction.user.id}> menandai transaksimu sebagai **${action.toUpperCase()}**`)
-                  .setTimestamp()
-              ]
-            });
-          } catch(e){ console.error(e); }
-        }
-        return;
-      }
-    }
-  } catch(e){ console.error(e); if (interaction&&!interaction.replied) interaction.reply({ content:'Error', ephemeral:true }); }
-});
-
-// ====== DM listener ======
-client.on('messageCreate', async (message) => {
-  if (message.author.bot) return;
-  if (!message.channel || (message.channel.type !== 1 && message.channel.type !== 'DM')) return;
-
-  const userId = message.author.id;
-  if (!PROOF_TARGET.has(userId)) return message.reply('Tekan tombol di /bypass dulu.');
-  const modAccount = PROOF_TARGET.get(userId);
-  const mod = MODS[modAccount];
-  if (!mod) { PROOF_TARGET.delete(userId); return message.reply('Moderator tidak ditemukan, ulangi dari server.'); }
-  if (!message.attachments || message.attachments.size===0) return message.reply('Tidak menemukan attachment.');
-
-  const ok = await forwardProofToMod(message, mod);
-  if (!ok) decrementModCount(modAccount);
-});
-
-// ====== login ======
-client.login(TOKEN).catch(e=>console.error('Login gagal:',e));
+      //
