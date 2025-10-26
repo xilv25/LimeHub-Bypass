@@ -1,7 +1,7 @@
 {
   "name": "discord-bypass-bot",
   "version": "1.0.0",
-  "description": "Discord bypass volcano — polished Replit-ready",
+  "description": "Discord bypass volcano — Guild-only version",
   "main": "index.js",
   "scripts": {
     "start": "node index.js"
