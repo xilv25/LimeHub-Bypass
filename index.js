@@ -1,4 +1,4 @@
-// index.js — Bypass Bot (final)
+// index.js — final combined
 const fs = require('fs');
 const path = require('path');
 const {
@@ -54,11 +54,12 @@ for (const acc of Object.keys(MODS)) MOD_ID_TO_ACCOUNT[MODS[acc].id] = acc;
 // ===== runtime maps =====
 const PROOF_TARGET = new Map(); // userId -> modAccount (assignment while user preparing)
 const PENDING = new Map(); // userId -> { modAccount, createdAt, modId }
-const BYPASS_EMBEDS = new Map(); // msgId -> intervalId for refresh cleanup (we store msg)
+const BYPASS_EMBEDS = new Map(); // msgId -> message
 const FORWARD_MAP = new Map(); // `${modId}_${userId}` -> forwardedMessageId
-const TEMP_ATTACH = new Map(); // userId -> { url, name } (latest attachment user sent in DM)
-let QUEUE = loadQueue(); // persistent
-let PAID_USERS = loadPaid(); // persistent
+const TEMP_ATTACH = new Map(); // userId -> { url, name }
+
+let QUEUE = loadQueue();
+let PAID_USERS = loadPaid();
 let HISTORY = loadHistory();
 
 // default online status
@@ -165,7 +166,6 @@ async function startEmbedRefresher(message) {
         new ButtonBuilder().setCustomId('assign_btn_whoisnda').setLabel('Contact WhoisNda').setStyle(ButtonStyle.Primary).setDisabled(!ONLINE['085219498004']),
         new ButtonBuilder().setCustomId('already_paid').setLabel('Already Paid ✅').setStyle(ButtonStyle.Success)
       );
-      // try edit; if fail, remove from map and clear interval
       if (msg.editable) await msg.edit({ embeds: [newEmbed], components: [row] });
       else {
         try {
@@ -196,6 +196,7 @@ async function forwardRequestToMod(userId, mod, titleSuffix = '', link = '') {
   try {
     const modUser = await client.users.fetch(mod.id);
     const sent = await modUser.send({ embeds: [forwardEmbed], components: [row] });
+    // store forward id so we can edit message later (remove buttons)
     FORWARD_MAP.set(`${mod.id}_${userId}`, sent.id);
     PENDING.set(userId, { modAccount: mod.account, createdAt: new Date().toISOString(), modId: mod.id });
     recomputeQueueCounts();
@@ -234,7 +235,6 @@ client.on('interactionCreate', async (interaction) => {
         if (!MOD_ID_TO_ACCOUNT[interaction.user.id]) return interaction.reply({ content: 'Khusus moderator.', ephemeral: true });
         const acc = MOD_ID_TO_ACCOUNT[interaction.user.id];
         ONLINE[acc] = (cmd === 'on');
-        // if mod back online, nothing else; embed refresher will show enabled button
         return interaction.reply({ content: `Statusmu sekarang: ${ONLINE[acc] ? 'ONLINE' : 'OFFLINE'}`, ephemeral: true });
       }
       if (cmd === 'status') {
@@ -248,15 +248,16 @@ client.on('interactionCreate', async (interaction) => {
     if (interaction.isButton && interaction.customId) {
       const cid = interaction.customId;
 
-      // Contact Jojo / WhoisNda — NO modal at server click. Bot DM immediately with embed + SUBMIT button.
+      // Contact Jojo / WhoisNda — server-side guard: block if mod OFF
       if (cid === 'assign_btn_jojo' || cid === 'assign_btn_whoisnda') {
         const assigned = (cid === 'assign_btn_jojo') ? '08170512639' : '085219498004';
+        if (!ONLINE[assigned]) {
+          return interaction.reply({ content: `Moderator ${MODS[assigned].tag} sedang OFFLINE. Silakan hubungi moderator lain.`, ephemeral: true });
+        }
         const mod = MODS[assigned];
         try {
-          // set assignment so user's DM flows know target
           PROOF_TARGET.set(interaction.user.id, assigned);
-
-          // DM embed instruct user to attach screenshot and press SUBMIT (submit opens modal for link)
+          // DM embed instruct user to attach screenshot and press SUBMIT
           const dmEmbed = new EmbedBuilder()
             .setTitle('Bypass Service — Rp. 3.000/hari')
             .setDescription(`Kirim **screenshot** bukti transfer di DM ini, lalu tekan **SUBMIT**. Bot akan meneruskannya ke ${mod.tag}.`)
@@ -269,7 +270,6 @@ client.on('interactionCreate', async (interaction) => {
           );
           const dmUser = await client.users.fetch(interaction.user.id);
           await dmUser.send({ embeds: [dmEmbed], components: [dmRow] });
-
           await interaction.reply({ content: `DM terkirim. Silakan cek DM dan upload screenshot lalu tekan SUBMIT.`, ephemeral: true });
           return;
         } catch (e) {
@@ -278,7 +278,7 @@ client.on('interactionCreate', async (interaction) => {
         }
       }
 
-      // Already Paid — show modal to input link (ephemeral)
+      // Already Paid — show modal for link (ephemeral)
       if (cid === 'already_paid') {
         const paid = getPaidInfo(interaction.user.id);
         if (!paid) return interaction.reply({ content: '❌ Kamu belum ditandai bayar hari ini. Gunakan Contact untuk kirim bukti.', ephemeral: true });
@@ -288,22 +288,19 @@ client.on('interactionCreate', async (interaction) => {
         return interaction.showModal(modal);
       }
 
-      // SUBMIT in DM (member-side) -> open modal for link
+      // SUBMIT in DM (member) -> show modal to input link
       if (cid === 'submit_proof') {
-        // only in DM
         const ch = interaction.channel;
         if (!ch || ch.type !== ChannelType.DM) return interaction.reply({ content: 'Tombol ini hanya bekerja di DM bot.', ephemeral: true });
         const uid = interaction.user.id;
         if (!PROOF_TARGET.has(uid)) return interaction.reply({ content: 'Kamu belum memulai permintaan via Contact. Tekan tombol Contact di server dulu.', ephemeral: true });
-
-        // show modal to collect link
         const modal = new ModalBuilder().setCustomId(`modal_submitlink_${uid}`).setTitle('Masukkan Link yang ingin di-bypass');
         const linkInput = new TextInputBuilder().setCustomId('link').setLabel('Link / Data').setStyle(TextInputStyle.Paragraph).setRequired(true).setPlaceholder('contoh: https://...');
         modal.addComponents({ type: 1, components: [linkInput] });
         return interaction.showModal(modal);
       }
 
-      // CANCEL in DM (member cancels preparation)
+      // CANCEL in DM (member cancels)
       if (cid === 'cancel_proof') {
         const uid = interaction.user.id;
         if (PROOF_TARGET.has(uid)) PROOF_TARGET.delete(uid);
@@ -315,9 +312,7 @@ client.on('interactionCreate', async (interaction) => {
       if (/^(sendbypass|cancel)_\d+$/.test(cid)) {
         const [action, userId] = cid.split('_');
         if (action === 'cancel') {
-          // remove pending
           if (PENDING.has(userId)) { PENDING.delete(userId); recomputeQueueCounts(); }
-          // edit forwarded message where possible
           try {
             const forwardId = FORWARD_MAP.get(`${interaction.user.id}_${userId}`);
             if (forwardId) {
@@ -330,14 +325,12 @@ client.on('interactionCreate', async (interaction) => {
               try { await interaction.update({ content: `Canceled by <@${interaction.user.id}>`, components: [], embeds: interaction.message.embeds }); } catch {}
             }
           } catch (e) {}
-          // notify user
           try { const targetUser = await client.users.fetch(userId); await targetUser.send({ embeds: [ new EmbedBuilder().setTitle('Transfer: Canceled ❌').setDescription(`Moderator <@${interaction.user.id}> membatalkan proses.`).setTimestamp() ] }); } catch(e){}
           recomputeQueueCounts();
-          refreshAll(); // refresh embed counts
+          refreshAll();
           return;
         }
         if (action === 'sendbypass') {
-          // show modal to mod to input bypass code
           const modal = new ModalBuilder().setCustomId(`modal_bypass_${userId}_${interaction.user.id}`).setTitle('Kirim Bypass Code');
           const bypassInput = new TextInputBuilder().setCustomId('bypass_code').setLabel('Masukkan bypass code').setStyle(TextInputStyle.Short).setRequired(true);
           const noteInput = new TextInputBuilder().setCustomId('note').setLabel('Pesan tambahan (opsional)').setStyle(TextInputStyle.Paragraph).setRequired(false);
@@ -351,12 +344,11 @@ client.on('interactionCreate', async (interaction) => {
     if (interaction.type === InteractionType.ModalSubmit && interaction.customId) {
       const cid = interaction.customId;
 
-      // modal when member submitted link after uploading screenshot in DM
+      // member submitted link after uploading screenshot in DM
       if (cid.startsWith('modal_submitlink_')) {
         const userId = cid.split('_')[2];
         if (interaction.user.id !== userId) return interaction.reply({ content: 'Modal tidak cocok dengan pengguna.', ephemeral: true });
 
-        // retrieve attachment saved earlier
         const att = TEMP_ATTACH.get(userId);
         if (!att || !att.url) return interaction.reply({ content: 'Tidak menemukan screenshot bukti. Silakan upload screenshot di DM lalu tekan SUBMIT lagi.', ephemeral: true });
 
@@ -365,21 +357,17 @@ client.on('interactionCreate', async (interaction) => {
         if (!assigned) return interaction.reply({ content: 'Tidak ada moderator online saat ini. Coba lagi nanti.', ephemeral: true });
         const mod = MODS[assigned];
 
-        // forward to mod
         const ok = await forwardRequestToMod(userId, mod, '(Proof with screenshot)', link);
         if (!ok) return interaction.reply({ content: 'Gagal menghubungi moderator. Coba lagi nanti.', ephemeral: true });
 
-        // send attachment to mod
         try {
           const modUser = await client.users.fetch(mod.id);
           await modUser.send({ content: `File bukti dari <@${userId}>:`, files: [att.url] }).catch(()=>{});
         } catch (e) {}
 
-        // save link/note history
         HISTORY.push({ type: 'proof_forwarded', userId, toMod: mod.id, link, attachment: att, at: new Date().toISOString() });
         saveHistory(HISTORY);
 
-        // clear temp & PROOF_TARGET (we keep PENDING until mod send/cancel)
         TEMP_ATTACH.delete(userId);
         PROOF_TARGET.delete(userId);
 
@@ -389,7 +377,7 @@ client.on('interactionCreate', async (interaction) => {
         return interaction.reply({ content: `Bukti dan link berhasil dikirim ke ${mod.tag}. Tunggu balasan mereka di DM.`, ephemeral: true });
       }
 
-        // Already Paid modal -> forward immediately (no screenshot)
+      // Already Paid modal -> forward immediately (no screenshot)
       if (cid.startsWith('modal_alreadypaid_')) {
         const parts = cid.split('_'); // modal_alreadypaid_<modAccount>_<userId>
         const preferred = parts[2];
@@ -403,7 +391,7 @@ client.on('interactionCreate', async (interaction) => {
           target = alt;
         }
         const mod = MODS[target];
-        const ok = await forwardRequestToMod(userId, mod, '(Already Paid)', link);
+       const ok = await forwardRequestToMod(userId, mod, '(Already Paid)', link);
         if (!ok) return interaction.reply({ content: 'Gagal menghubungi moderator. Coba lagi nanti.', ephemeral: true });
         HISTORY.push({ type: 'already_paid_forwarded', userId, toMod: mod.id, link, at: new Date().toISOString() });
         saveHistory(HISTORY);
@@ -412,33 +400,49 @@ client.on('interactionCreate', async (interaction) => {
         return interaction.reply({ content: `Permintaan kamu sudah dikirim ke ${mod.tag}.`, ephemeral: true });
       }
 
-      // mod sending bypass code
+      // mod sending bypass code (robust edit + delete pending)
       if (cid.startsWith('modal_bypass_')) {
         const parts = cid.split('_'); // modal_bypass_<userId>_<modId>
         const userId = parts[2];
         const modIdFromModal = parts[3];
         const modClickingId = interaction.user.id;
         if (modClickingId !== modIdFromModal) return interaction.reply({ content: 'Anda tidak berwenang.', ephemeral: true });
+
         const bypassCode = interaction.fields.getTextInputValue('bypass_code').trim();
         const note = interaction.fields.getTextInputValue('note') || '';
         const plain = `copy this bypass : ${bypassCode}`;
         const finalMsg = note ? `${plain}\n\n${note}` : plain;
+
         try {
           const user = await client.users.fetch(userId);
           await user.send({ content: finalMsg }).catch(()=>{});
-          // mark paid and remove pending
+
+          // mark paid
           const modAcc = MOD_ID_TO_ACCOUNT[modClickingId];
           if (modAcc) markUserPaid(userId, modAcc);
+
+          // remove PENDING for that user
           if (PENDING.has(userId)) { PENDING.delete(userId); recomputeQueueCounts(); }
-          // update forwarded message to remove buttons if possible
-          const forwardMsgId = FORWARD_MAP.get(`${modClickingId}_${userId}`);
-          if (forwardMsgId) {
-            const modUser = await client.users.fetch(modClickingId);
-            const dm = await modUser.createDM();
-            const fmsg = await dm.messages.fetch(forwardMsgId).catch(()=>null);
-            if (fmsg) await fmsg.edit({ content: `Bypass sent by <@${modClickingId}>`, components: [], embeds: fmsg.embeds });
-            FORWARD_MAP.delete(`${modClickingId}_${userId}`);
+
+          // Try to edit the forwarded message in mod DM to remove buttons (robust)
+          try {
+            const forwardKey = `${modClickingId}_${userId}`;
+            const forwardMsgId = FORWARD_MAP.get(forwardKey);
+            if (forwardMsgId) {
+              const modUser = await client.users.fetch(modClickingId);
+              const dm = await modUser.createDM();
+              const fmsg = await dm.messages.fetch(forwardMsgId).catch(()=>null);
+              if (fmsg) {
+                await fmsg.edit({ content: `Bypass sent by <@${modClickingId}>`, components: [], embeds: fmsg.embeds }).catch(()=>{});
+              }
+              FORWARD_MAP.delete(forwardKey);
+            } else {
+              try { await interaction.message?.edit?.({ components: [] }); } catch(e) {}
+            }
+          } catch (e) {
+            // silent fallback
           }
+
           HISTORY.push({ type: 'bypass_sent', to: userId, fromMod: modClickingId, code: bypassCode, note, at: new Date().toISOString() });
           saveHistory(HISTORY);
           refreshAll();
@@ -488,21 +492,27 @@ function refreshAll() {
 client.on('messageCreate', async (message) => {
   try {
     if (message.author.bot) return;
-    // only handle DM attachments for proof flow
     if (message.channel && message.channel.type === ChannelType.DM) {
       const uid = message.author.id;
       if (message.attachments && message.attachments.size > 0) {
-        // save the first attachment (url + name)
         const a = message.attachments.first();
         TEMP_ATTACH.set(uid, { url: a.url, name: a.name || '' });
-        // optionally notify user
-        try { await message.reply({ content: 'Screenshot terdeteksi dan disimpan. Tekan SUBMIT untuk mengirim ke moderator.', ephemeral: true }); } catch(e){}
+        try { await message.reply({ content: 'Screenshot terdeteksi dan disimpan. Tekan SUBMIT untuk mengirim ke moderator.' }); } catch(e){}
       }
     }
   } catch (e) { /* ignore */ }
 });
 
-// ===== handle messages from users in guild DMs? (not needed) =====
+// ===== small keepalive for Replit (use with UptimeRobot) =====
+try {
+  const express = require('express');
+  const app = express();
+  const PORT = process.env.PORT || 3000;
+  app.get('/', (req, res) => res.send('Bot is alive'));
+  app.listen(PORT, () => console.log(`Keepalive server listening on ${PORT}`));
+} catch (e) {
+  // express not installed — optional
+}
 
-// ===== startup =====
+// ===== login =====
 client.login(TOKEN).catch(err => console.error('Login failed', err));
