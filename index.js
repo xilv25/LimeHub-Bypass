@@ -14,7 +14,8 @@ const MOD1_ID = process.env.MOD1_ID;
 const MOD2_ID = process.env.MOD2_ID;
 
 if (!TOKEN || !CLIENT_ID || !GUILD_ID || !MOD1_ID || !MOD2_ID) {
-  console.error('ENV missing'); process.exit(1);
+  console.error('ENV missing: set TOKEN, CLIENT_ID, GUILD_ID, MOD1_ID, MOD2_ID');
+  process.exit(1);
 }
 
 const DATA_DIR = __dirname;
@@ -24,12 +25,18 @@ const PAID_FILE = path.join(DATA_DIR, 'paid.json');
 
 function loadJsonSafe(fp, fallback) {
   try {
-    if (!fs.existsSync(fp)) { fs.writeFileSync(fp, JSON.stringify(fallback, null, 2)); return fallback; }
+    if (!fs.existsSync(fp)) {
+      fs.writeFileSync(fp, JSON.stringify(fallback, null, 2));
+      return fallback;
+    }
     return JSON.parse(fs.readFileSync(fp, 'utf8') || JSON.stringify(fallback));
-  } catch (e) { return fallback; }
+  } catch (e) {
+    return fallback;
+  }
 }
-function saveJsonSafe(fp, obj) { try { fs.writeFileSync(fp, JSON.stringify(obj, null, 2)); } catch {} }
-
+function saveJsonSafe(fp, obj) {
+  try { fs.writeFileSync(fp, JSON.stringify(obj, null, 2)); } catch {}
+}
 function loadHistory(){ return loadJsonSafe(HISTORY_FILE, []); }
 function saveHistory(h){ saveJsonSafe(HISTORY_FILE, h); }
 function loadQueue(){ return loadJsonSafe(QUEUE_FILE, { accounts: ['08170512639','085219498004'], counts: {'08170512639':0,'085219498004':0} }); }
@@ -79,7 +86,10 @@ function getLeastLoadedOnlineAccount() {
   const online = QUEUE.accounts.filter(a => ONLINE[a]);
   if (!online.length) return null;
   let best = online[0], bestCount = QUEUE.counts[best] || 0;
-  for (const a of online) { const c = QUEUE.counts[a] || 0; if (c < bestCount) { best = a; bestCount = c; } }
+  for (const a of online) {
+    const c = QUEUE.counts[a] || 0;
+    if (c < bestCount) { best = a; bestCount = c; }
+  }
   QUEUE.counts[best] = (QUEUE.counts[best] || 0) + 1;
   saveQueue(QUEUE);
   return best;
@@ -155,13 +165,16 @@ async function refreshAllBypassEmbeds() {
   }
 }
 
-async function forwardRequestToMod(userId, mod, titleSuffix = '') {
+async function forwardRequestToMod(userId, mod, titleSuffix = '', link = '') {
   const forwardEmbed = new EmbedBuilder()
     .setTitle(`📩 Support Request ${titleSuffix}`.trim())
     .setDescription(`User <@${userId}> requests support.`)
     .addFields({ name: 'User', value: `<@${userId}>`, inline: true }, { name: 'Rekening tujuan', value: mod.account, inline: true })
     .setFooter({ text: 'Click Send Bypass to deliver bypass, or Cancel to decline.' })
     .setTimestamp();
+  if (link && typeof link === 'string' && link.length > 0) {
+    forwardEmbed.addFields({ name: 'Link / Data', value: link.length > 1024 ? link.slice(0, 1021) + '...' : link, inline: false });
+  }
   const row = new ActionRowBuilder().addComponents(
     new ButtonBuilder().setCustomId(`sendbypass_${userId}`).setLabel('Send Bypass').setStyle(ButtonStyle.Primary),
     new ButtonBuilder().setCustomId(`cancel_${userId}`).setLabel('Cancel ❌').setStyle(ButtonStyle.Danger)
@@ -171,7 +184,7 @@ async function forwardRequestToMod(userId, mod, titleSuffix = '') {
     const sent = await modUser.send({ embeds: [forwardEmbed], components: [row] });
     FORWARD_MAP.set(`${mod.id}_${userId}`, sent.id);
     PENDING.set(userId, { modAccount: mod.account, createdAt: new Date().toISOString(), modId: mod.id });
-    const hist = loadHistory(); hist.push({ type: 'request_forwarded', userId, toMod: mod.id, at: new Date().toISOString() }); saveHistory(hist);
+    const hist = loadHistory(); hist.push({ type: 'request_forwarded', userId, toMod: mod.id, link: link || '', at: new Date().toISOString() }); saveHistory(hist);
     return true;
   } catch (e) { return false; }
 }
@@ -181,7 +194,7 @@ async function initiateProofDMAssign(user) {
     const assignedAccount = getLeastLoadedOnlineAccount();
     if (!assignedAccount) return { ok:false, reason:'No moderators online' };
     const mod = MODS[assignedAccount];
-    await user.send({ embeds: [ new EmbedBuilder().setTitle('Bypass Service — Rp. 3.000/hari').setDescription(`Kirim bukti ke moderator ${mod.tag} sebagai balasan pesan ini.`).addFields({ name: 'Rekening Tujuan', value: mod.account }) ] });
+    await user.send({ embeds: [ new EmbedBuilder().setTitle('Bypass Service — Rp. 3.000/hari').setDescription(`Kirim bukti transfer disini, bot akan meneruskannya ke ${mod.tag}.`).addFields({ name: 'Rekening Tujuan', value: mod.account }) ] });
     PROOF_TARGET.set(user.id, assignedAccount);
     const hist = loadHistory(); hist.push({ type: 'assigned', userId: user.id, toAccount: assignedAccount, at: new Date().toISOString() }); saveHistory(hist);
     refreshAllBypassEmbeds().catch(()=>{});
@@ -247,42 +260,42 @@ client.on('interactionCreate', async (interaction) => {
 
     if (interaction.isButton && interaction.isButton()) {
       const cid = interaction.customId;
+
+      // Assign buttons
       if (cid === 'assign_btn_jojo' || cid === 'assign_btn_whoisnda') {
         const res = await initiateProofDMAssign(interaction.user);
         if (!res.ok) return interaction.reply({ content: res.reason || 'Gagal mengirim DM — buka DM Anda.', ephemeral: true });
         const assigned = res.assignedAccount;
         const mod = MODS[assigned];
-        const emb = new EmbedBuilder()
+        const replyEmb = new EmbedBuilder()
           .setTitle('Moderator Ditugaskan')
           .setDescription(`Kamu dialokasikan ke moderator ${mod.tag}. Silakan cek DM.`)
           .addFields({ name: 'Moderator', value: mod.tag, inline: true }, { name: 'Nomor Rekening', value: mod.account, inline: true }, ...queueStatusFields())
           .setFooter({ text: 'Jika DM tidak datang, cek pengaturan privacy Anda.' })
           .setTimestamp();
-        const row = new ActionRowBuilder().addComponents(
+        const replyRow = new ActionRowBuilder().addComponents(
           new ButtonBuilder().setCustomId('resend_dm').setLabel('Kirim Ulang DM').setStyle(ButtonStyle.Primary),
           new ButtonBuilder().setCustomId('cancel_assign').setLabel('Cancel').setStyle(ButtonStyle.Secondary)
         );
-        return interaction.reply({ embeds: [emb], components: [row], ephemeral: true });
+        return interaction.reply({ embeds: [replyEmb], components: [replyRow], ephemeral: true });
       }
 
+      // Already Paid: show modal to input link
       if (cid === 'already_paid') {
         const userId = interaction.user.id;
         const paid = getPaidInfo(userId);
         if (!paid) return interaction.reply({ content: '❌ Kamu belum membayar hari ini. Silakan pilih mod terlebih dahulu.', ephemeral: true });
-        const preferred = paid.modAccount;
-        let target = null;
-        if (ONLINE[preferred]) target = preferred;
-        else {
-          const alt = getLeastLoadedOnlineAccount();
-          if (!alt) return interaction.reply({ content: 'Saat ini tidak ada moderator online. Coba lagi nanti.', ephemeral: true });
-          target = alt;
-        }
-        const mod = MODS[target];
-        const ok = await forwardRequestToMod(userId, mod, '(Already Paid)');
-        if (!ok) return interaction.reply({ content: 'Gagal menghubungi moderator. Silakan coba lagi.', ephemeral: true });
-        await interaction.reply({ content: `Permintaan dikirim ke ${mod.tag}. Tunggu respon mereka di DM.`, ephemeral: true });
-        refreshAllBypassEmbeds().catch(()=>{});
-        return;
+        const modal = new ModalBuilder()
+          .setCustomId(`modal_alreadypaid_${paid.modAccount}`)
+          .setTitle('Already Paid — Masukkan Link / Data');
+        const linkInput = new TextInputBuilder()
+          .setCustomId('bypass_link')
+          .setLabel('Masukkan link atau data yang ingin dibypass')
+          .setStyle(TextInputStyle.Paragraph)
+          .setRequired(true)
+          .setPlaceholder('contoh: https://... atau detail akun / order id');
+        modal.addComponents({ type: 1, components: [linkInput] });
+        return interaction.showModal(modal);
       }
 
       if (cid === 'resend_dm') {
@@ -290,10 +303,11 @@ client.on('interactionCreate', async (interaction) => {
         if (!assigned) return interaction.reply({ content: 'Tidak ada assignment aktif. Tekan tombol di /bypass dulu.', ephemeral: true });
         const mod = MODS[assigned];
         try {
-          await (await client.users.fetch(interaction.user.id)).send({ embeds: [ new EmbedBuilder().setTitle('Bypass Service — Rp. 3.000/hari').setDescription(`Kirim bukti ke moderator ${mod.tag} sebagai balasan pesan ini.`).addFields({ name: 'Rekening Tujuan', value: mod.account }) ] });
+          await (await client.users.fetch(interaction.user.id)).send({ embeds: [ new EmbedBuilder().setTitle('Bypass Service — Rp. 3.000/hari').setDescription(`Kirim bukti transfer disini, bot akan meneruskannya ke ${mod.tag}.`).addFields({ name: 'Rekening Tujuan', value: mod.account }) ] });
           return interaction.reply({ content: 'DM dikirim ulang. Cek DM kamu.', ephemeral: true });
         } catch (e) { return interaction.reply({ content: 'Gagal kirim ulang DM. Periksa pengaturan privacy Anda.', ephemeral: true }); }
       }
+
       if (cid === 'cancel_assign') {
         const assigned = PROOF_TARGET.get(interaction.user.id);
         if (assigned) { PROOF_TARGET.delete(interaction.user.id); decrementModCount(assigned); refreshAllBypassEmbeds().catch(()=>{}); }
@@ -342,6 +356,31 @@ client.on('interactionCreate', async (interaction) => {
       }
     }
 
+    if (interaction.type === InteractionType.ModalSubmit && interaction.customId && interaction.customId.startsWith('modal_alreadypaid_')) {
+      const parts = interaction.customId.split('_');
+      const preferredAccount = parts[2];
+      const userId = interaction.user.id;
+      const link = interaction.fields.getTextInputValue('bypass_link').trim();
+      let targetAccount = preferredAccount;
+      if (!ONLINE[preferredAccount]) {
+        const alt = getLeastLoadedOnlineAccount();
+        if (!alt) {
+          await interaction.reply({ content: 'Saat ini tidak ada moderator online. Coba lagi nanti.', ephemeral: true });
+          return;
+        }
+        targetAccount = alt;
+      }
+      const mod = MODS[targetAccount];
+      const ok = await forwardRequestToMod(userId, mod, '(Already Paid)', link);
+      if (!ok) {
+        await interaction.reply({ content: 'Gagal menghubungi moderator. Silakan coba lagi nanti.', ephemeral: true });
+        return;
+      }
+      await interaction.reply({ content: `Permintaan kamu sudah dikirim ke ${mod.tag}. Tunggu respon mereka di DM.`, ephemeral: true });
+      refreshAllBypassEmbeds().catch(()=>{});
+      return;
+    }
+
     if (interaction.type === InteractionType.ModalSubmit && interaction.customId && interaction.customId.startsWith('modal_bypass_')) {
       const parts = interaction.customId.split('_');
       const userId = parts[2];
@@ -371,6 +410,14 @@ client.on('interactionCreate', async (interaction) => {
           const pending = PENDING.get(userId) || null;
           if (pending && pending.modAccount) decrementModCount(pending.modAccount);
           if (PENDING.has(userId)) PENDING.delete(userId);
+          await interaction.reply({ content: 'Bypass code berhasil dikirim. User marked PAID 24h.', ephemeral: true });
+          const hist = loadHistory(); hist.push({ type: 'reply_bypass', to: userId, fromMod: modClickingId, bypassCode, note, at: new Date().toISOString() }); saveHistory(hist);
+          refreshAllBypassEmbeds().catch(()=>{});
+          return;
+        } catch (e) {
+          const pending = PENDING.get(userId) || null;
+          if (pending && pending.modAccount) decrementModCount(pending.modAccount);
+          if (PENDING.has(userId)) PENDING.delete(userId);
           try { await interaction.reply({ content: 'Bypass dikirim, tapi gagal update forwarded message. User marked PAID 24h.', ephemeral: true }); } catch(e){}
           const hist = loadHistory(); hist.push({ type: 'reply_bypass_partial', to: userId, fromMod: modClickingId, bypassCode, note, at: new Date().toISOString() }); saveHistory(hist);
           refreshAllBypassEmbeds().catch(()=>{});
@@ -381,6 +428,7 @@ client.on('interactionCreate', async (interaction) => {
         return;
       }
     }
+
   } catch (err) { try { if (interaction && !interaction.replied) await interaction.reply({ content: 'Terjadi error.', ephemeral: true }); } catch(e){} }
 });
 
@@ -448,3 +496,5 @@ client.on('messageCreate', async (message) => {
 });
 
 client.login(TOKEN).catch(err => console.error('Login failed', err));
+                                                 
+      
